@@ -11,9 +11,10 @@ from stable_baselines3 import PPO
 
 # Files and parameters
 reference_file = "piano1.mid"
-file_to_fix = "single_notes_errors_piano_and_drums2.mid"
-correct_file = "single_notes_piano_and_drums2.mid"
+file_to_fix = "single_notes_errors_piano_and_drums6.mid"
+correct_file = "single_notes_piano_and_drums6.mid"
 gen_or_fix = "FIX"
+train_model = False
 
 len_of_state = 4
 top_n = 10   # Number of items to take after for generating the final policy
@@ -97,13 +98,14 @@ env = FiniteHorizonDDPEnv(
     horizon=horizon
 )
 
-# Train agent using PPO
-model = PPO("MlpPolicy", env, verbose=1)
-model.learn(total_timesteps=PPO_time_steps)
+if train_model:
+    # Train agent using PPO
+    model = PPO("MlpPolicy", env, verbose=1)
+    model.learn(total_timesteps=PPO_time_steps)
 
-# Save trained model
-model.save("ppo_finite_horizon")
-print("Model trained and saved successfully!")
+    # Save trained model
+    model.save("ppo_finite_horizon")
+    print("Model trained and saved successfully!")
 
 # Load the trained model
 model = PPO.load("ppo_finite_horizon")
@@ -135,7 +137,7 @@ for key in policy_dict.keys():
 
 print("Policy extracted")
 
-if gen_or_fix == "GEN":
+if gen_or_fix.upper() == "GEN":
     generated_tuple = ()
     idx = random.randint(0, len(list(vec_policy.keys())) - 1)
     s = list(vec_policy.keys())[idx]
@@ -147,7 +149,7 @@ if gen_or_fix == "GEN":
     decoded_generated_tuple = code.decode_1d_non_modulo_vectorized_audio(generated_tuple)
     n = io.export_MIDI([decoded_generated_tuple], file_name="out_new.mid", ticks_per_sixteenth=180)
 
-if gen_or_fix == "FIX":
+if gen_or_fix.upper() == "FIX":
     generated_tuple = ()
     idx = random.randint(0, len(list(vec_policy.keys())) - 1)
     s = list(vec_policy.keys())[idx]
