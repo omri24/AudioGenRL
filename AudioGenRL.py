@@ -13,8 +13,9 @@ from stable_baselines3 import PPO
 reference_file = "piano1.mid"
 file_to_fix = "single_notes_errors_piano_and_drums2.mid"
 correct_file = "single_notes_piano_and_drums2.mid"
-gen_or_fix = "GEN"
+gen_or_fix = "FIX"
 
+len_of_state = 4
 top_n = 10   # Number of items to take after for generating the final policy
 arcs_for_state = 5   # Number of actions that will be legal for each state
 horizon = 100
@@ -25,7 +26,7 @@ leading_items_to_remove_from_action_options = 5
 # Extract audio
 fix_lst = io.vectorize_MIDI(file_to_fix, channel_filtering=0)
 single_notes_lst = [code.get_single_note_audio_from_multi_note_audio(item) for item in fix_lst]
-up_down_feature_lst_lst = [code.get_up_down_features_from_audio(item, len_of_state=4) for item in single_notes_lst]
+up_down_feature_lst_lst = [code.get_up_down_features_from_audio(item, len_of_state=len_of_state) for item in single_notes_lst]
 
 ref_lst = io.vectorize_MIDI(reference_file, channel_filtering=0)
 ref_data = [code.format_dataset_single_note_optional_modulo_encoding(item, 4, 0) for item in ref_lst]
@@ -136,18 +137,32 @@ print("Policy extracted")
 
 if gen_or_fix == "GEN":
     generated_tuple = ()
-    s = list(vec_policy.keys())[0]
+    idx = random.randint(0, len(list(vec_policy.keys())) - 1)
+    s = list(vec_policy.keys())[idx]
     for _ in range(steps_in_the_final_generation):
         options_lst = vec_policy[s]
         idx = random.randint(leading_items_to_remove_from_action_options, len(options_lst) - 1)
-        s = vec_policy[s][idx]    # Select last item, could be other items
+        s = vec_policy[s][idx]
         generated_tuple += s
     decoded_generated_tuple = code.decode_1d_non_modulo_vectorized_audio(generated_tuple)
     n = io.export_MIDI([decoded_generated_tuple], file_name="out_new.mid", ticks_per_sixteenth=180)
 
 if gen_or_fix == "FIX":
-    None
+    generated_tuple = ()
+    idx = random.randint(0, len(list(vec_policy.keys())) - 1)
+    s = list(vec_policy.keys())[idx]
+    up_down_feature_lst = up_down_feature_lst_lst[0]
+    steps_in_final_fix = int(len(up_down_feature_lst) / len_of_state)
+    for i in range(steps_in_final_fix):
+        options_lst = vec_policy[s]
+        idx = random.randint(leading_items_to_remove_from_action_options, len(options_lst) - 1)
+        s = vec_policy[s][idx]
+        target_class = up_down_feature_lst[i: i + len_of_state]
+        s_to_add = agent.fit_state_to_class(s, target_class)
+        generated_tuple += s_to_add
 
+    decoded_generated_tuple = code.decode_1d_non_modulo_vectorized_audio(generated_tuple)
+    n = io.export_MIDI([decoded_generated_tuple], file_name="out_new.mid", ticks_per_sixteenth=180)
 
 
 
