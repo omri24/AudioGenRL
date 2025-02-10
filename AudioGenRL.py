@@ -9,22 +9,23 @@ import MIDI_coding as code
 import RL_algorithms as RL
 from stable_baselines3 import PPO
 
-# Files and parameters
+# Configurations
 reference_file = "piano1.mid"
 file_to_fix = "single_notes_errors_piano_and_drums6.mid"
 correct_file = "single_notes_piano_and_drums6.mid"
 gen_or_fix = "FIX"
-train_model = False
+train_PPO = False
 
+# Hyper-parameters
 len_of_state = 4
 top_n = 10   # Number of items to take after for generating the final policy
 arcs_for_state = 5   # Number of actions that will be legal for each state
-horizon = 100
-PPO_time_steps = 100
-steps_in_the_final_generation = horizon
+horizon = 1000
+PPO_time_steps = 1000
+steps_in_the_final_generation = 100
 leading_items_to_remove_from_action_options = 5
 
-# Extract audio
+# Extract audio and construct tools
 fix_lst = io.vectorize_MIDI(file_to_fix, channel_filtering=0)
 single_notes_lst = [code.get_single_note_audio_from_multi_note_audio(item) for item in fix_lst]
 up_down_feature_lst_lst = [code.get_up_down_features_from_audio(item, len_of_state=len_of_state) for item in single_notes_lst]
@@ -33,10 +34,10 @@ ref_lst = io.vectorize_MIDI(reference_file, channel_filtering=0)
 ref_data = [code.format_dataset_single_note_optional_modulo_encoding(item, 4, 0) for item in ref_lst]
 
 my_env = RL.DeterministicEnvTools([], {}, {}, {}, -1)
-my_env.construct_env_from_observations_dict(ref_data[0], arcs_for_state=arcs_for_state)
+my_env.construct_EnvTools_from_observations_dict(ref_data[0], arcs_for_state=arcs_for_state)
 
 agent = RL.AgentTools(my_env, horizon=horizon)
-agent.construct_agent_from_env()
+agent.construct_AgentTools_from_env()
 
 actions_dict = my_env.actions_dict_new
 rewards_dict = my_env.rewards_dict_new
@@ -98,7 +99,7 @@ env = FiniteHorizonDDPEnv(
     horizon=horizon
 )
 
-if train_model:
+if train_PPO:
     # Train agent using PPO
     model = PPO("MlpPolicy", env, verbose=1)
     model.learn(total_timesteps=PPO_time_steps)
@@ -122,44 +123,46 @@ def get_top_actions(model, state, top_n=3):
     return top_actions
 
 
-print("Extracting policy")
+print("Extracting policy from PPO")
 
-policy_dict = {}
+policy_dict_ppo = {}
 
 for state in all_states:
     actions = get_top_actions(model=model, state=state, top_n=top_n)
-    policy_dict[state] = actions
+    policy_dict_ppo[state] = actions
 
-vec_policy = {}
-for key in policy_dict.keys():
-    new_lst = [int_vec_map[item] for item in policy_dict[key]]
-    vec_policy[int_vec_map[key]] = new_lst
+vec_policy_ppo = {}
+for key in policy_dict_ppo.keys():
+    new_lst = [int_vec_map[item] for item in policy_dict_ppo[key]]
+    vec_policy_ppo[int_vec_map[key]] = new_lst
 
 print("Policy extracted")
 
+# Generate audio
 if gen_or_fix.upper() == "GEN":
     generated_tuple = ()
-    idx = random.randint(0, len(list(vec_policy.keys())) - 1)
-    s = list(vec_policy.keys())[idx]
+    idx = random.randint(0, len(list(vec_policy_ppo.keys())) - 1)
+    s = list(vec_policy_ppo.keys())[idx]
     for _ in range(steps_in_the_final_generation):
-        options_lst = vec_policy[s]
+        options_lst = vec_policy_ppo[s]
         idx = random.randint(leading_items_to_remove_from_action_options, len(options_lst) - 1)
-        s = vec_policy[s][idx]
+        s = vec_policy_ppo[s][idx]
         generated_tuple += s
     decoded_generated_tuple = code.decode_1d_non_modulo_vectorized_audio(generated_tuple)
     n = io.export_MIDI([decoded_generated_tuple], file_name="out_new.mid", ticks_per_sixteenth=180)
 
+# Fix errors
 if gen_or_fix.upper() == "FIX":
     generated_tuple = ()
-    idx = random.randint(0, len(list(vec_policy.keys())) - 1)
-    s = list(vec_policy.keys())[idx]
+    idx = random.randint(0, len(list(vec_policy_ppo.keys())) - 1)
+    s = list(vec_policy_ppo.keys())[idx]
     up_down_feature_lst = up_down_feature_lst_lst[0]
     steps_in_final_fix = int(len(up_down_feature_lst) / len_of_state)
     for i in range(steps_in_final_fix):
-        options_lst = vec_policy[s]
+        options_lst = vec_policy_ppo[s]
         idx = random.randint(leading_items_to_remove_from_action_options, len(options_lst) - 1)
-        s = vec_policy[s][idx]
-        target_class = up_down_feature_lst[i: i + len_of_state]
+        s = vec_policy_ppo[s][idx]
+        target_class = up_down_feature_lst[4 * i: 4 * i + len_of_state]
         s_to_add = agent.fit_state_to_class(s, target_class)
         generated_tuple += s_to_add
 

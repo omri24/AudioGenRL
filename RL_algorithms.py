@@ -28,7 +28,7 @@ class DeterministicEnvTools:
         self.state = self.observe_next_state(action)
         return None
 
-    def construct_env_from_observations_dict(self, observations_dict, arcs_for_state=5):
+    def construct_EnvTools_from_observations_dict(self, observations_dict, arcs_for_state=5):
         """
         Construct the environment
         :param observations_dict: dict in the format of the output of the function
@@ -160,7 +160,7 @@ class AgentTools:
                     last_item = int(statistics.mean(state))
         return tuple(ret_lst)
 
-    def construct_agent_from_env(self, map_tuples_to_int=1, random_V_Q=1):
+    def construct_AgentTools_from_env(self, map_tuples_to_int=1, random_V_Q=1):
         timer_start = time.time()
         t_policy = {}
         if map_tuples_to_int == 1:
