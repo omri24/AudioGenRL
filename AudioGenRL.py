@@ -7,23 +7,26 @@ import numpy as np
 import MIDI_IO as io
 import MIDI_coding as code
 import RL_algorithms as RL
+import audio_metrics as metrics
 from stable_baselines3 import PPO
 
 # Configurations
 reference_file = "piano1_ref.mid"
 file_to_fix = "single_notes_errors_piano_and_drums6.mid"
 correct_file = "single_notes_piano_and_drums6.mid"
-gen_or_fix = "gen"
+gen_or_fix = "fix"
 train_PPO = True
 
 # Hyper-parameters
 len_of_state = 4
 top_n = 10   # Number of items to take after for generating the final policy
+top_n_untrained = 1
 arcs_for_state = 10   # Minimal number of actions that will be legal for each state
-horizon = 1e3
-PPO_time_steps = 1e3
+horizon = 1e4
+PPO_time_steps = 1e4
 steps_in_the_final_generation = 100
 leading_items_to_remove_from_action_options = 5
+comparison_loop_iterations = 10
 
 # Extract audio and construct tools
 fix_lst = io.vectorize_MIDI(file_to_fix, channel_filtering=0)
@@ -114,6 +117,9 @@ if train_PPO:
 # Load the trained model
 model = PPO.load("ppo_finite_horizon")
 
+# Load the untrained model
+untrained_model = PPO.load("ppo_finite_horizon_not_trained")
+
 # Function to get the top 3 best actions for a given state
 def get_top_actions(model, state, top_n=3):
     obs = torch.tensor([state], dtype=torch.float32).to(device='cuda')  # Convert state to tensor
@@ -130,20 +136,26 @@ timer_start = time.time()
 print("Extracting policy from PPO")
 
 policy_dict_ppo = {}
+policy_dict_ppo_untrained = {}
 for state in all_states:
     actions = get_top_actions(model=model, state=state, top_n=top_n)
     policy_dict_ppo[state] = actions
+    actions_untrained = get_top_actions(model=untrained_model, state=state, top_n=top_n_untrained)
+    policy_dict_ppo_untrained[state] = actions_untrained
 
 vec_policy_ppo = {}
+vec_policy_ppo_untrained = {}
 for key in policy_dict_ppo.keys():
     new_lst = [int_vec_map[item] for item in policy_dict_ppo[key]]
     vec_policy_ppo[int_vec_map[key]] = new_lst
+    new_lst_untrained = [int_vec_map[item] for item in policy_dict_ppo_untrained[key]]
+    vec_policy_ppo_untrained[int_vec_map[key]] = new_lst_untrained
 
 timer_end = time.time()
 
 print(f"Policy extracted in {round(timer_end - timer_start, 2)} seconds")
 
-# Generate audio
+# Generate audio with trained and untrained policies
 if gen_or_fix.lower() == "gen":
     print("Generating audio")
     timer_start = time.time()
@@ -155,13 +167,24 @@ if gen_or_fix.lower() == "gen":
         idx = random.randint(leading_items_to_remove_from_action_options, len(options_lst) - 1)
         s = vec_policy_ppo[s][idx]
         generated_tuple += s
+
     decoded_generated_tuple = code.decode_1d_non_modulo_vectorized_audio(generated_tuple)
     n = io.export_MIDI([decoded_generated_tuple], file_name="out_new.mid", ticks_per_sixteenth=180)
     timer_end = time.time()
     print(f"Audio generated in {round(timer_end - timer_start, 2)} seconds")
 
+    # Generate with untrained model
+    generated_tuple_untrained = ()
+    idx = random.randint(0, len(list(vec_policy_ppo_untrained.keys())) - 1)
+    s = list(vec_policy_ppo_untrained.keys())[idx]
+    for _ in range(steps_in_the_final_generation):
+        options_lst = vec_policy_ppo_untrained[s]
+        idx = random.randint(0, len(options_lst) - 1)
+        s = vec_policy_ppo_untrained[s][idx]
+        generated_tuple_untrained += s
+
 # Fix errors
-if gen_or_fix.lower() == "fix":
+elif gen_or_fix.lower() == "fix":
     print("Fixing audio")
     timer_start = time.time()
     generated_tuple = ()
@@ -181,6 +204,52 @@ if gen_or_fix.lower() == "fix":
     n = io.export_MIDI([decoded_generated_tuple], file_name="out_new.mid", ticks_per_sixteenth=180)
     timer_end = time.time()
     print(f"Audio fixed in {round(timer_end - timer_start, 2)} seconds")
+
+    # Fix with untrained model
+    generated_tuple_untrained = ()
+    idx = random.randint(0, len(list(vec_policy_ppo_untrained.keys())) - 1)
+    s = list(vec_policy_ppo_untrained.keys())[idx]
+    up_down_feature_lst = up_down_feature_lst_lst[0]
+    steps_in_final_fix = int(len(up_down_feature_lst) / len_of_state)
+    for i in range(steps_in_final_fix):
+        options_lst = vec_policy_ppo_untrained[s]
+        idx = random.randint(0, len(options_lst) - 1)
+        s = vec_policy_ppo_untrained[s][idx]
+        target_class = up_down_feature_lst[4 * i: 4 * i + len_of_state]
+        s_to_add = agent_tools.fit_state_to_class(s, target_class)
+        generated_tuple_untrained += s_to_add
+
+else:
+    generated_tuple = None
+    raise ValueError(f"Unsupported value for 'gen or fix': {gen_or_fix}")
+
+# Compare trained and untrained versions
+generated_tuple_trained = generated_tuple
+
+# Load the 'correct' audio
+correct_lst = io.vectorize_MIDI(correct_file, channel_filtering=0)
+single_notes_lst_corrected = [code.get_single_note_audio_from_multi_note_audio(item) for item in correct_lst]
+encoded_correct = [code.single_note_modulo_encoder(item) for item in single_notes_lst_corrected]
+
+# Calculate the improvement
+shortest_sequence_len = min(len(encoded_correct[0]), len(generated_tuple_trained), len(generated_tuple_untrained))
+# other dict option dist_dict={0: 0, 1: 5, 2: 2, 3: 3, 4: 4, 5: 1, 6: 6, 7: 1, 8: 4, 9: 3, 10: 2, 11: 5}
+delta_correct_untrained = metrics.general_vector_modulo_12_metric(
+    list(encoded_correct[0])[:shortest_sequence_len], list(generated_tuple_untrained)[:shortest_sequence_len])
+delta_correct_trained = metrics.general_vector_modulo_12_metric(
+    list(encoded_correct[0])[:shortest_sequence_len], list(generated_tuple_trained)[:shortest_sequence_len])
+mean_delta_untrained = delta_correct_untrained / shortest_sequence_len
+mean_delta_trained = delta_correct_trained / shortest_sequence_len
+print("\nComparing the performance of the trained model and the untrained model:")
+print(f"Mean delta[correct, untrained]: {round(mean_delta_untrained, 2)}")
+print(f"Mean delta[correct, trained]: {round(mean_delta_trained, 2)}")
+
+# Positive value of 'improvement' is what we want
+improvement = (mean_delta_untrained - mean_delta_trained) / mean_delta_untrained
+print(f"Improvement (%): {round(improvement * 100, 2)}")
+
+for i in range(comparison_loop_iterations):
+    print(f"Comparison iteration: {i}")
 
 
 
