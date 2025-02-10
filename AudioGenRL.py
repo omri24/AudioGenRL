@@ -15,7 +15,7 @@ reference_file = "piano1_ref.mid"
 file_to_fix = "single_notes_errors_piano_and_drums6.mid"
 correct_file = "single_notes_piano_and_drums6.mid"
 gen_or_fix = "fix"
-train_PPO = True
+train_PPO = False
 
 # Hyper-parameters
 len_of_state = 4
@@ -133,7 +133,7 @@ def get_top_actions(model, state, top_n=3):
 
 # Extract the policy learned by the agent (PPO)
 timer_start = time.time()
-print("Extracting policy from PPO")
+print("Extracting policies from PPO")
 
 policy_dict_ppo = {}
 policy_dict_ppo_untrained = {}
@@ -249,7 +249,88 @@ improvement = (mean_delta_untrained - mean_delta_trained) / mean_delta_untrained
 print(f"Improvement (%): {round(improvement * 100, 2)}")
 
 for i in range(comparison_loop_iterations):
-    print(f"Comparison iteration: {i}")
+    print(f"\nComparison iteration: {i + 1}")
+
+    # Generate audio with trained and untrained policies
+    if gen_or_fix.lower() == "gen":
+        generated_tuple = ()
+        idx = random.randint(0, len(list(vec_policy_ppo.keys())) - 1)
+        s = list(vec_policy_ppo.keys())[idx]
+        for _ in range(steps_in_the_final_generation):
+            options_lst = vec_policy_ppo[s]
+            idx = random.randint(leading_items_to_remove_from_action_options, len(options_lst) - 1)
+            s = vec_policy_ppo[s][idx]
+            generated_tuple += s
+
+        # Generate with untrained model
+        generated_tuple_untrained = ()
+        idx = random.randint(0, len(list(vec_policy_ppo_untrained.keys())) - 1)
+        s = list(vec_policy_ppo_untrained.keys())[idx]
+        for _ in range(steps_in_the_final_generation):
+            options_lst = vec_policy_ppo_untrained[s]
+            idx = random.randint(0, len(options_lst) - 1)
+            s = vec_policy_ppo_untrained[s][idx]
+            generated_tuple_untrained += s
+
+    # Fix errors
+    elif gen_or_fix.lower() == "fix":
+        generated_tuple = ()
+        idx = random.randint(0, len(list(vec_policy_ppo.keys())) - 1)
+        s = list(vec_policy_ppo.keys())[idx]
+        up_down_feature_lst = up_down_feature_lst_lst[0]
+        steps_in_final_fix = int(len(up_down_feature_lst) / len_of_state)
+        for i in range(steps_in_final_fix):
+            options_lst = vec_policy_ppo[s]
+            idx = random.randint(leading_items_to_remove_from_action_options, len(options_lst) - 1)
+            s = vec_policy_ppo[s][idx]
+            target_class = up_down_feature_lst[4 * i: 4 * i + len_of_state]
+            s_to_add = agent_tools.fit_state_to_class(s, target_class)
+            generated_tuple += s_to_add
+
+        # Fix with untrained model
+        generated_tuple_untrained = ()
+        idx = random.randint(0, len(list(vec_policy_ppo_untrained.keys())) - 1)
+        s = list(vec_policy_ppo_untrained.keys())[idx]
+        up_down_feature_lst = up_down_feature_lst_lst[0]
+        steps_in_final_fix = int(len(up_down_feature_lst) / len_of_state)
+        for i in range(steps_in_final_fix):
+            options_lst = vec_policy_ppo_untrained[s]
+            idx = random.randint(0, len(options_lst) - 1)
+            s = vec_policy_ppo_untrained[s][idx]
+            target_class = up_down_feature_lst[4 * i: 4 * i + len_of_state]
+            s_to_add = agent_tools.fit_state_to_class(s, target_class)
+            generated_tuple_untrained += s_to_add
+
+    else:
+        generated_tuple = None
+        raise ValueError(f"Unsupported value for 'gen or fix': {gen_or_fix}")
+
+    # Compare trained and untrained versions
+    generated_tuple_trained = generated_tuple
+
+    # Load the 'correct' audio
+    correct_lst = io.vectorize_MIDI(correct_file, channel_filtering=0)
+    single_notes_lst_corrected = [code.get_single_note_audio_from_multi_note_audio(item) for item in correct_lst]
+    encoded_correct = [code.single_note_modulo_encoder(item) for item in single_notes_lst_corrected]
+
+    # Calculate the improvement
+    shortest_sequence_len = min(len(encoded_correct[0]), len(generated_tuple_trained), len(generated_tuple_untrained))
+    # other dict option dist_dict={0: 0, 1: 5, 2: 2, 3: 3, 4: 4, 5: 1, 6: 6, 7: 1, 8: 4, 9: 3, 10: 2, 11: 5}
+    delta_correct_untrained = metrics.general_vector_modulo_12_metric(
+        list(encoded_correct[0])[:shortest_sequence_len], list(generated_tuple_untrained)[:shortest_sequence_len])
+    delta_correct_trained = metrics.general_vector_modulo_12_metric(
+        list(encoded_correct[0])[:shortest_sequence_len], list(generated_tuple_trained)[:shortest_sequence_len])
+    mean_delta_untrained = delta_correct_untrained / shortest_sequence_len
+    mean_delta_trained = delta_correct_trained / shortest_sequence_len
+    print("Comparing the performance of the trained model and the untrained model:")
+    print(f"Mean delta[correct, untrained]: {round(mean_delta_untrained, 2)}")
+    print(f"Mean delta[correct, trained]: {round(mean_delta_trained, 2)}")
+
+    # Positive value of 'improvement' is what we want
+    improvement = (mean_delta_untrained - mean_delta_trained) / mean_delta_untrained
+    print(f"Improvement (%): {round(improvement * 100, 2)}")
+
+
 
 
 
