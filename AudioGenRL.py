@@ -1,5 +1,5 @@
 import random
-
+import time
 import gymnasium as gym
 from gymnasium import spaces
 import torch
@@ -10,18 +10,18 @@ import RL_algorithms as RL
 from stable_baselines3 import PPO
 
 # Configurations
-reference_file = "piano1.mid"
+reference_file = "piano1_ref.mid"
 file_to_fix = "single_notes_errors_piano_and_drums6.mid"
 correct_file = "single_notes_piano_and_drums6.mid"
-gen_or_fix = "FIX"
-train_PPO = False
+gen_or_fix = "gen"
+train_PPO = True
 
 # Hyper-parameters
 len_of_state = 4
 top_n = 10   # Number of items to take after for generating the final policy
-arcs_for_state = 5   # Number of actions that will be legal for each state
-horizon = 1000
-PPO_time_steps = 1000
+arcs_for_state = 10   # Minimal number of actions that will be legal for each state
+horizon = 1e3
+PPO_time_steps = 1e3
 steps_in_the_final_generation = 100
 leading_items_to_remove_from_action_options = 5
 
@@ -33,17 +33,17 @@ up_down_feature_lst_lst = [code.get_up_down_features_from_audio(item, len_of_sta
 ref_lst = io.vectorize_MIDI(reference_file, channel_filtering=0)
 ref_data = [code.format_dataset_single_note_optional_modulo_encoding(item, 4, 0) for item in ref_lst]
 
-my_env = RL.DeterministicEnvTools([], {}, {}, {}, -1)
-my_env.construct_EnvTools_from_observations_dict(ref_data[0], arcs_for_state=arcs_for_state)
+env_tools = RL.DeterministicEnvTools([], {}, {}, {}, -1)
+env_tools.construct_EnvTools_from_observations_dict(ref_data[0], arcs_for_state=arcs_for_state)
 
-agent = RL.AgentTools(my_env, horizon=horizon)
-agent.construct_AgentTools_from_env()
+agent_tools = RL.AgentTools(env_tools, horizon=horizon)
+agent_tools.construct_AgentTools_from_env()
 
-actions_dict = my_env.actions_dict_new
-rewards_dict = my_env.rewards_dict_new
-vec_int_map = my_env.vec_int_map
-int_vec_map = my_env.int_vec_map
-all_states = [vec_int_map[item] for item in my_env.all_states]
+actions_dict = env_tools.actions_dict_new
+rewards_dict = env_tools.rewards_dict_new
+vec_int_map = env_tools.vec_int_map
+int_vec_map = env_tools.int_vec_map
+all_states = [vec_int_map[item] for item in env_tools.all_states]
 
 # Define the class of gym env
 class FiniteHorizonDDPEnv(gym.Env):
@@ -74,7 +74,7 @@ class FiniteHorizonDDPEnv(gym.Env):
         step_initial_state = self.state
         if action not in self.actions.get(self.state, []):
             done = self.timestep >= self.horizon
-            return self.state, -1.0, done, False, {}  # Invalid action penalty
+            return self.state, -10.0, done, False, {}  # Invalid action penalty
 
         next_state = action  # Action represents the next state directly
         reward = self.rewards.get((self.state, action), 0.0)
@@ -101,12 +101,15 @@ env = FiniteHorizonDDPEnv(
 
 if train_PPO:
     # Train agent using PPO
+    print("Model training with PPO started")
+    timer_start = time.time()
     model = PPO("MlpPolicy", env, verbose=1)
     model.learn(total_timesteps=PPO_time_steps)
 
     # Save trained model
     model.save("ppo_finite_horizon")
-    print("Model trained and saved successfully!")
+    timer_end = time.time()
+    print(f"Model trained and saved in {round(timer_end - timer_start, 2)} seconds")
 
 # Load the trained model
 model = PPO.load("ppo_finite_horizon")
@@ -122,11 +125,11 @@ def get_top_actions(model, state, top_n=3):
     top_actions = np.argsort(action_probs[0])[::-1][:top_n]
     return top_actions
 
-
+# Extract the policy learned by the agent (PPO)
+timer_start = time.time()
 print("Extracting policy from PPO")
 
 policy_dict_ppo = {}
-
 for state in all_states:
     actions = get_top_actions(model=model, state=state, top_n=top_n)
     policy_dict_ppo[state] = actions
@@ -136,10 +139,14 @@ for key in policy_dict_ppo.keys():
     new_lst = [int_vec_map[item] for item in policy_dict_ppo[key]]
     vec_policy_ppo[int_vec_map[key]] = new_lst
 
-print("Policy extracted")
+timer_end = time.time()
+
+print(f"Policy extracted in {round(timer_end - timer_start, 2)} seconds")
 
 # Generate audio
-if gen_or_fix.upper() == "GEN":
+if gen_or_fix.lower() == "gen":
+    print("Generating audio")
+    timer_start = time.time()
     generated_tuple = ()
     idx = random.randint(0, len(list(vec_policy_ppo.keys())) - 1)
     s = list(vec_policy_ppo.keys())[idx]
@@ -150,9 +157,13 @@ if gen_or_fix.upper() == "GEN":
         generated_tuple += s
     decoded_generated_tuple = code.decode_1d_non_modulo_vectorized_audio(generated_tuple)
     n = io.export_MIDI([decoded_generated_tuple], file_name="out_new.mid", ticks_per_sixteenth=180)
+    timer_end = time.time()
+    print(f"Audio generated in {round(timer_end - timer_start, 2)} seconds")
 
 # Fix errors
-if gen_or_fix.upper() == "FIX":
+if gen_or_fix.lower() == "fix":
+    print("Fixing audio")
+    timer_start = time.time()
     generated_tuple = ()
     idx = random.randint(0, len(list(vec_policy_ppo.keys())) - 1)
     s = list(vec_policy_ppo.keys())[idx]
@@ -163,11 +174,13 @@ if gen_or_fix.upper() == "FIX":
         idx = random.randint(leading_items_to_remove_from_action_options, len(options_lst) - 1)
         s = vec_policy_ppo[s][idx]
         target_class = up_down_feature_lst[4 * i: 4 * i + len_of_state]
-        s_to_add = agent.fit_state_to_class(s, target_class)
+        s_to_add = agent_tools.fit_state_to_class(s, target_class)
         generated_tuple += s_to_add
 
     decoded_generated_tuple = code.decode_1d_non_modulo_vectorized_audio(generated_tuple)
     n = io.export_MIDI([decoded_generated_tuple], file_name="out_new.mid", ticks_per_sixteenth=180)
+    timer_end = time.time()
+    print(f"Audio fixed in {round(timer_end - timer_start, 2)} seconds")
 
 
 

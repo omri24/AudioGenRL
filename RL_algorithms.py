@@ -1,10 +1,8 @@
-import statistics
-
 import numpy as np
 import random
 import time
 import statistics
-import pandas as pd
+from scipy.stats import bernoulli
 
 class DeterministicEnvTools:
     def __init__(self, states_list, actions_dict, rewards_dict, transitions_dict, initial_state):
@@ -14,19 +12,6 @@ class DeterministicEnvTools:
         self.transitions = transitions_dict   # Dict in the form of: {(state, action): nextstate}
         self.initial_state = initial_state
         self.state = initial_state
-
-    def observe_next_state(self, action):
-        if action not in self.all_actions[self.state]:
-            ret_str = "Can't choose this action in the current state of the environment"
-            print("Env says: Can't choose this action in the current state of the environment")
-            return ret_str
-        else:
-            next_state = self.transitions[(self.state, action)]
-            return next_state
-
-    def step(self, action):
-        self.state = self.observe_next_state(action)
-        return None
 
     def construct_EnvTools_from_observations_dict(self, observations_dict, arcs_for_state=5):
         """
@@ -71,8 +56,7 @@ class DeterministicEnvTools:
             self.state = self.all_states[i]
         else:
             self.state = self.initial_state
-        timer_end = time.time()
-        calc_time = timer_end - timer_start
+
 
         vec_int_map = {}
         int_vec_map = {}
@@ -98,6 +82,9 @@ class DeterministicEnvTools:
         for key in self.all_rewards.keys():
             new_key = (vec_int_map[key[0]], vec_int_map[key[1]])
             self.rewards_dict_new[new_key] = self.all_rewards[key]
+
+        timer_end = time.time()
+        calc_time = timer_end - timer_start
 
         print("EnvironmentTools constructed in " + str(round(calc_time, 2)) + " seconds")
         return None
@@ -264,209 +251,6 @@ class AgentTools:
             i = random.randint(0, len(possible_actions_in_state) - 1)
             return possible_actions_in_state[i]
 
-    def get_reward(self, Q_is_vec, action=None):
-        curr_state = self.env.state
-        if action:
-            chosen_action = action
-        else:
-            chosen_action = self.get_action(Q_is_vec)
-        return self.env.all_rewards[(curr_state, chosen_action)]
-
-    def get_next_state(self, Q_is_vec, action=None):
-        if action:
-            chosen_action = action
-        else:
-            chosen_action = self.get_action(Q_is_vec)
-        return self.env.observe_next_state(chosen_action)
-
-    def termination_check(self, old_Q_vec=None, detect_convergence=True, threshold=0.001, memo_bound=100):
-        if detect_convergence:
-            if not isinstance(old_Q_vec, np.ndarray):
-                raise ValueError("Must supply old_Q_vec for detect convergence mode")
-            max_improvement = np.max((self.Q_vec - old_Q_vec) / self.Q_vec)
-            if max_improvement < threshold:
-                self.times_without_improvement += 1
-            if memo_bound < self.times_without_improvement or self.t >= self.horizon:
-                return self.policy
-            else:
-                return 0
-        else:
-            if self.t < self.horizon:
-                return 0
-            else:
-                return self.policy
-
-    def general_TDT_learning_step(self, temporal_difference_target, is_epsilon_greedy=1):
-        action = self.get_action(force_greedy=1, Q_is_vec=0, epsilon_greedy=is_epsilon_greedy)
-        state = self.env.state
-        alpha = self.standard_learning_rate()
-        self.Q[(state, action)] = (1 - alpha) * self.Q[(state, action)] + alpha * temporal_difference_target
-        if self.t not in self.log.keys():
-            self.log[self.t] = []
-        self.log[self.t].append((state, action))
-        self.log[self.t].append(self.Q[(state, action)])
-        if self.Q[(state, action)] > self.greedy_Q_val[state][1]:
-            self.greedy_Q_val[state] = [action, self.Q[(state, action)]]
-            self.policy[state] = action
-        self.t += 1
-        if self.t % 100000 == 0:
-            print("Completed " + str(self.t / 1000) + " * 10^3 time steps")
-        self.env.step(action)
-
-    def SARSA_step(self, is_epsilon_greedy=1):
-        reward = self.get_reward(Q_is_vec=0)
-        next_state = self.get_next_state(Q_is_vec=0)
-        next_action = self.get_action(state_tuple=next_state, Q_is_vec=0, epsilon_greedy=is_epsilon_greedy, force_greedy=1)
-        temporal_difference_target = reward + self.discount_factor * self.Q[(next_state, next_action)]
-        self.general_TDT_learning_step(temporal_difference_target, is_epsilon_greedy)
-        to_end = self.termination_check(detect_convergence=False)
-        if to_end != 0:
-            return self.policy
-        else:
-            return 0
-
-    def SARSA_lambda_step(self, is_epsilon_greedy=1, const_alpha=1, mat_Q=0, improvement_check=False):
-        action = self.get_action(Q_is_vec=1, force_greedy=1, epsilon_greedy=is_epsilon_greedy)
-        state = self.env.state
-        reward = self.get_reward(Q_is_vec=1, action=action)
-        next_state = self.get_next_state(Q_is_vec=1, action=action)
-        next_action = self.get_action(Q_is_vec=1, state_tuple=next_state, force_greedy=1, epsilon_greedy=is_epsilon_greedy)
-        concat_state = (state, action)
-        next_concat_state = (next_state, next_action)
-        if mat_Q == 1:
-            delta = reward + self.discount_factor * self.Q_mat[self.one_tuple_int_map[next_state],self.one_tuple_int_map[next_action]] \
-                                        - self.Q_mat[self.one_tuple_int_map[state], self.one_tuple_int_map[action]]
-            self.e_mat[self.one_tuple_int_map[state], self.one_tuple_int_map[action]] += 1
-            self.e_mat *= float(self.lambd * self.discount_factor)
-            if const_alpha == 1:
-                self.Q_mat += self.alpha * delta * self.e_mat
-            else:
-                self.Q_mat += self.standard_learning_rate() * delta * self.e_mat
-        else:   # Vector mode
-            delta = reward + self.discount_factor * self.Q_vec[self.two_tuple_int_map[next_concat_state]] - self.Q_vec[self.two_tuple_int_map[concat_state]]
-            self.e_vec *= float(self.lambd * self.discount_factor)
-            self.e_vec[self.two_tuple_int_map[concat_state]] += 1
-            if improvement_check:
-                old_Q_vec = self.Q_vec.copy()
-            if const_alpha == 1:
-                self.Q_vec += self.alpha * delta * self.e_vec
-            else:
-                self.Q_vec += self.standard_learning_rate() * delta * self.e_vec
-            print_if_decreased = False
-            if improvement_check and print_if_decreased:
-                if np.any(old_Q_vec > self.Q_vec):
-                    print("At time " + str(self.t) + " Q of some state action pair decreased")
-        if self.t not in self.log.keys():
-            self.log[self.t] = []
-        self.log[self.t].append((state, action))
-        self.log[self.t].append(self.Q[(state, action)])
-        self.t += 1
-        if self.t % 1000 == 0:
-            print("Completed " + str(self.t / 1000) + " * 10^3 time steps")
-        self.env.step(action)
-        if improvement_check:
-            to_end = self.termination_check(old_Q_vec=old_Q_vec)
-        else:
-            to_end = self.termination_check(detect_convergence=False)
-        if to_end != 0:
-            if mat_Q == 1:
-                print("No mat support!!!!!!!")
-            else:
-                for i in range(self.Q_vec.shape[0]):
-                    key = self.int_two_tuple_map[i]
-                    self.Q[key] = self.Q_vec[i]
-                return self.policy
-        else:
-            return 0
-
-    def greedy_Q_action_considering_class(self, next_class):
-        possible_actions_in_state = self.env.all_actions[self.env.state]
-        opt_key = -1
-        opt_Q_val = -1
-        for action in possible_actions_in_state:
-            if self.standard_state_classification(action) == next_class:  # action fits class
-                curr_key = (self.env.state, action)
-                if self.Q[curr_key] > opt_Q_val:
-                    opt_key = curr_key
-                    opt_Q_val = self.Q[curr_key]
-        if isinstance(opt_key, int):  # No relevant state according to class
-            return -1
-        else:
-            return opt_key[1]
-
-    def move_to_random_state(self):
-        i = random.randint(0, len(self.env.all_states) - 1)
-        return self.env.all_states[i]
-
-    def generate_audio_sequence(self, in_samples=0, max_history=8, enhance=1):
-        ret_tuple = ()
-        history = []
-        if in_samples == 0:
-            samples = self.horizon
-        else:
-            samples = in_samples
-        for time_step in range(samples):
-            if isinstance(self.env.state, str):
-                raise ValueError("Policy learned illegal action")
-            if self.policy[self.env.state] == self.env.state:
-                print("State s == s' occurred in s = " + str(self.env.state))
-                self.env.state = self.move_to_random_state()
-            if self.env.state in history:
-                print("state s in history occurred in s = " + str(self.env.state))
-                self.env.state = self.move_to_random_state()
-
-            if enhance == 1:
-                mode = random.randint(0, 7)
-                if mode < 2:
-                    ret_tuple += self.env.state
-                elif mode > 7:
-                    ret_tuple += self.env.state
-                    ret_tuple += self.env.state
-                    ret_tuple += self.env.state
-                    ret_tuple += self.env.state
-                else:
-                    ret_tuple += self.env.state
-                    ret_tuple += self.env.state
-
-            elif enhance == 2:
-                if len(ret_tuple) % 16 == 12:
-                    ret_tuple += self.env.state
-                    ret_tuple += self.env.state
-                    ret_tuple += self.env.state
-                    ret_tuple += self.env.state
-                elif len(ret_tuple) % 16 == 13:
-                    ret_tuple += self.env.state
-                    ret_tuple += self.env.state
-                    ret_tuple += self.env.state
-                elif len(ret_tuple) % 16 == 14:
-                    ret_tuple += self.env.state
-                    ret_tuple += self.env.state
-                elif len(ret_tuple) % 16 == 15:
-                    ret_tuple += self.env.state
-                else:
-                    ret_tuple += self.env.state
-                    ret_tuple += self.env.state
-
-            else:
-                ret_tuple += self.env.state
-                ret_tuple += self.env.state
-            if len(history) <= max_history:
-                history += [self.env.state]
-            else:
-                temp_var = history.pop(0)
-                history += [self.env.state]
-            action = self.policy[self.env.state]
-            self.env.step(action)
-        return ret_tuple
-
-    def get_random_state_from_class(self, desired_class):
-        if desired_class in self.state_classes.keys():
-            optional_states = self.state_classes[desired_class]
-            idx = random.randint(0, len(optional_states) - 1)
-            return optional_states[idx]
-        else:
-            return -1
-
     def fit_state_to_class(self, state, target_class, safe_mode=True):
         helping_list = []
         last_note = -1
@@ -523,158 +307,3 @@ class AgentTools:
                     raise ValueError("The function added a note that's higher than 127 !!!")
                 last_note = added_item
         return tuple(helping_list)
-
-
-    def fix_audio(self, up_down_feature_lst, method=1, max_history=8):
-        ret_tuple = ()
-        len_of_env_state = len(self.env.state)
-
-        initial_class = self.standard_state_classification(tuple(up_down_feature_lst[:len_of_env_state]))
-        try_getting_random_state = self.get_random_state_from_class(initial_class)
-        if not isinstance(try_getting_random_state, int):
-            self.env.state = try_getting_random_state
-        else:
-            self.env.state = self.move_to_random_state()
-        for idx, item in enumerate(up_down_feature_lst):
-            if idx % len_of_env_state == 0 and (idx - 1 + len_of_env_state) < len(up_down_feature_lst) and method in [0, 1]: # Condition to generate new state
-                if 999 not in up_down_feature_lst:
-                    print("Value 999 isn't in 'up_down_feature_lst' but this value is expected in mode 1,0...")
-                if idx == 0:
-                    last_added_tuple = self.env.state
-                    ret_tuple += last_added_tuple
-                else:
-                    target_class = self.standard_state_classification(tuple(up_down_feature_lst[idx:idx + len_of_env_state]))
-                    try_class_greedy = self.greedy_Q_action_considering_class(target_class)
-                    if method == 0:
-                        if isinstance(try_class_greedy, int):     # No possible next state that fits target_class
-                            try_getting_random_state = self.get_random_state_from_class(target_class)
-                            if isinstance(try_getting_random_state, int):
-                                last_added_tuple = self.move_to_random_state()
-                                self.env.state = last_added_tuple
-                                ret_tuple += last_added_tuple
-                            else:
-                                last_added_tuple = try_getting_random_state
-                                self.env.state = last_added_tuple
-                                ret_tuple += last_added_tuple
-                        else:
-                            last_added_tuple = try_class_greedy
-                            self.env.state = last_added_tuple
-                            ret_tuple += last_added_tuple   # The class greedy attempt succeeded
-                    elif method == 1:    # New method - best from methods [1-7]
-                        if isinstance(try_class_greedy, int):     # No possible next state that fits target_class
-                            next_state_greedy_no_class_consideration = self.get_action(
-                                Q_is_vec=0, state_tuple=self.env.state, force_greedy=1, epsilon_greedy=0, parse=1)
-                            corrected_state = self.fit_state_to_class(
-                                next_state_greedy_no_class_consideration, target_class)
-                            last_added_tuple = corrected_state
-                            ret_tuple += last_added_tuple
-                        else:
-                            last_added_tuple = try_class_greedy
-                            self.env.state = last_added_tuple
-                            ret_tuple += last_added_tuple  # The class greedy attempt succeeded
-                    else:
-                        print("Value of 'method' is incorrect")
-        if method == 2:
-            if 999 in up_down_feature_lst:
-                print("Value 999 appears in 'up_down_feature_lst' but this value is not expected in mode 2")
-            curr_state = self.env.state
-            desired_length = len(up_down_feature_lst)
-            iterations = int(desired_length / len(curr_state))
-            for i in range(iterations):
-                next_state = self.get_action(Q_is_vec=False, state_tuple=curr_state)
-                ret_tuple += next_state
-                curr_state = next_state
-        elif method == 3:
-            if 999 in up_down_feature_lst:
-                print("Value 999 appears in 'up_down_feature_lst' but this value is not expected in mode 3")
-            curr_state = self.env.state
-            desired_length = len(up_down_feature_lst)
-            iterations = int(desired_length / len(curr_state))
-            for i in range(iterations):
-                next_state = self.get_action(Q_is_vec=False, state_tuple=curr_state)
-                ret_tuple += next_state
-                curr_state = next_state
-            ret_list = list(ret_tuple)
-            for item in ret_list:
-                if item not in [666, 0]:
-                    last_note = item
-                    break
-            for idx, item in enumerate(ret_list):
-                if up_down_feature_lst[idx] == 666:
-                    ret_list[idx] = 666
-                elif up_down_feature_lst[idx] == 0:
-                    ret_list[idx] = last_note
-                elif up_down_feature_lst[idx] == 1:
-                    if item <= last_note:
-                        if item + 12 < 128:
-                            ret_list[idx] += 12
-                    last_note = ret_list[idx]
-                elif up_down_feature_lst[idx] == -1:
-                    if item >= last_note:
-                        if item - 12 > -1:
-                            ret_list[idx] += -12
-                    last_note = ret_list[idx]
-        elif method == 4:
-            if 999 in up_down_feature_lst:
-                print("Value 999 appears in 'up_down_feature_lst' but this value is not expected in mode 4")
-            curr_state = self.env.state
-            desired_length = len(up_down_feature_lst)
-            iterations = int(desired_length / len(curr_state))
-            for i in range(iterations):
-                possible_actions_in_state = self.env.all_actions[curr_state]
-                i = random.randint(0, len(possible_actions_in_state) - 1)
-                next_state = possible_actions_in_state[i]
-                ret_tuple += next_state
-                if curr_state == next_state:
-                    curr_state = self.move_to_random_state()
-                else:
-                    curr_state = next_state
-        elif method == 7:   # Generate only according to the observations - old
-            curr_state = self.env.state
-            desired_length = len(up_down_feature_lst)
-            iterations = int(desired_length / len(curr_state))
-            for i in range(iterations):
-                possible_actions = self.env.all_states
-                j = random.randint(0, len(possible_actions) - 1)
-                ret_tuple += possible_actions[j]
-        elif method == 6:  # Generate only according to the observations - new
-            curr_state = self.env.state
-            desired_length = len(up_down_feature_lst)
-            iterations = int(desired_length / len(curr_state))
-            for i in range(iterations):
-                j = random.randint(0, len(tuple(self.Q.keys())) - 1)
-                ret_tuple += tuple(self.Q.keys())[j][0]
-        else:
-            if method not in [0, 1]:
-                print("Value of 'method' is incorrect")
-        return ret_tuple
-
-    def dump_Q(self, file_name, method=1):
-        if method == 0:
-            helping_dict = {}
-            for key in self.Q.keys():
-                helping_dict[key] = [self.Q[key]]
-            helping_df = pd.DataFrame.from_dict(helping_dict)
-            helping_df.to_csv("Q_func_out.csv", sep=",")
-        else:     # method == 1
-            helping_lst = []
-            for key in self.Q.keys():
-                temp_lst = list(key[0]) + list(key[1]) + [self.Q[key]]
-                helping_lst.append(temp_lst)
-            arr = np.array(helping_lst)
-            np.savetxt(file_name, arr, delimiter=",")
-
-    def read_Q_csv(self, file_name, len_state, len_action):
-        print("CSV read began")
-        helping_arr = np.loadtxt(file_name, delimiter=",")
-        for i in range(helping_arr.shape[0]):
-            elem0 = []
-            elem1 = []
-            for j in range(helping_arr.shape[1]):
-                if j < len_state:
-                    elem0.append(helping_arr[i, j])
-                elif j < (len_state + len_action):
-                    elem1.append(helping_arr[i, j])
-                else:   # last item in the row
-                    self.Q[(tuple(elem0), tuple(elem1))] = helping_arr[i, j]
-        print("Q constructed")
