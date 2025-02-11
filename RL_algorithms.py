@@ -145,6 +145,7 @@ class DeterministicEnvTools:
 
         self.vec_int_map = vec_int_map
         self.int_vec_map = int_vec_map
+        self.next_available_idx = curr_int
 
         self.actions_dict_new = {}
 
