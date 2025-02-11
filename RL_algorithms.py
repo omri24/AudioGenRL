@@ -3,6 +3,82 @@ import random
 import time
 import statistics
 from scipy.stats import bernoulli
+import gymnasium as gym
+from gymnasium import spaces
+import torch
+from scipy.stats import entropy
+
+
+
+# Define the class of gym env
+class FiniteHorizonDDPEnv(gym.Env):
+    def __init__(self, states, actions, rewards, horizon):
+        super(FiniteHorizonDDPEnv, self).__init__()
+
+        self.states = states  # List of possible states (integers)
+        self.actions = actions  # Dict: state -> list of valid next states
+        self.rewards = rewards  # Dict: (state, action) -> reward
+        self.horizon = horizon  # Finite horizon
+
+        self.state = None  # Current state
+        self.timestep = 0  # Track episode length
+
+        self.observation_space = spaces.Discrete(len(states))
+        self.action_space = spaces.Discrete(max(len(a) for a in actions.values()))
+
+    def reset(self, seed=None, options=None, random_reset=True):
+        super().reset(seed=seed)
+        self.state = self.states[0]  # Reset to initial state (assumed first in list)
+        if random_reset:
+            idx = random.randint(0, len(self.states) - 1)
+            self.state = self.states[idx]
+        self.timestep = 0
+        return self.state, {}
+
+    def step(self, action):
+        step_initial_state = self.state
+        if action not in self.actions.get(self.state, []):
+            done = self.timestep >= self.horizon
+            return self.state, -10.0, done, False, {}  # Invalid action penalty
+
+        next_state = action  # Action represents the next state directly
+        reward = self.rewards.get((self.state, action), 0.0)
+
+        self.state = next_state
+        self.timestep += 1
+        done = self.timestep >= self.horizon
+
+        if next_state == step_initial_state:
+            reward = -1.0   # penalty for choosing the same action again
+
+        return self.state, reward, done, False, {}
+
+    def render(self, mode='human'):
+        print(f"Step: {self.timestep}, State: {self.state}")
+
+
+# Function to get the top 3 best actions for a given state
+def get_top_actions(model, state, top_n=3):
+    obs = torch.tensor([state], dtype=torch.float32).to(device='cuda')  # Convert state to tensor
+    with torch.no_grad():
+        dist = model.policy.get_distribution(obs)  # Get action distribution
+        action_probs = torch.exp(dist.distribution.logits).cpu().numpy()  # Convert to probabilities
+
+    # Get top N actions by sorting
+    top_actions = np.argsort(action_probs[0])[::-1][:top_n]
+    return top_actions
+
+
+def calculate_entropy(signal):
+    # Make sure the signal is a np array
+    signal = np.array(signal)
+
+    # Get probability distribution
+    values, counts = np.unique(signal, return_counts=True)
+    probabilities = counts / counts.sum()
+
+    return entropy(probabilities, base=2)  # Base 2 for bits unit
+
 
 class DeterministicEnvTools:
     def __init__(self, states_list, actions_dict, rewards_dict, transitions_dict, initial_state):
