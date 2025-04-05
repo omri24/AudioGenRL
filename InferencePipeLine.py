@@ -12,6 +12,7 @@ import re
 import sys
 import mido
 from copy import deepcopy
+from music21 import converter, key
 
 # Configurations
 reference_file = "piano1_ref.mid"
@@ -106,17 +107,28 @@ for _ in range(steps_in_the_final_generation):
     generated_tuple += s
 
 decoded_generated_tuple = code.decode_1d_non_modulo_vectorized_audio(generated_tuple)
+n = io.export_MIDI([decoded_generated_tuple], file_name="mid_saved_midi_file.mid", ticks_per_sixteenth=180)
 timer_end = time.time()
 print(f"Audio generated in {round(timer_end - timer_start, 2)} seconds by PPO")
 
 
 # Audio generation params
-offset = -12  # Semi-tone shifts up or down to the entire generated audio
+offset = "auto"  # Semi-tone shifts up or down to the entire generated audio
 target_track = 0
 target_channel = 3
 file_name_for_inference = "solo and back.MID"
 p = 1 / 3   # Probability to change a note (error)
 error_range = 2   # Range of error
+
+# Estimate keys
+midi_input = converter.parse(file_name_for_inference)
+midi_generated = converter.parse("mid_saved_midi_file.mid")
+
+key_estimate_input = midi_input.analyze('key').tonic.midi
+key_estimate_generated = midi_generated.analyze('key').tonic.midi
+
+if isinstance(offset, str):
+    offset = key_estimate_input - key_estimate_generated
 
 # Inference
 print("Starting inference run")
