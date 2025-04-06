@@ -11,8 +11,10 @@ from prettytable import PrettyTable
 import re
 import sys
 import mido
+from mido import Message
 from copy import deepcopy
 from music21 import converter, key
+from audio_tools import get_scale_notes, closest_note, remove_risky_notes
 
 # Configurations
 reference_file = "piano1_ref.mid"
@@ -29,7 +31,7 @@ top_n_untrained = top_n
 arcs_for_state = 10   # Minimal number of actions that will be legal for each state
 horizon = 5e2
 agent_time_steps = 5e1
-steps_in_the_final_generation = 100
+steps_in_the_final_generation = 2000
 leading_items_to_remove_from_action_options = 0
 comparison_loop_iterations = 100
 
@@ -107,54 +109,117 @@ for _ in range(steps_in_the_final_generation):
     generated_tuple += s
 
 decoded_generated_tuple = code.decode_1d_non_modulo_vectorized_audio(generated_tuple)
-n = io.export_MIDI([decoded_generated_tuple], file_name="mid_saved_midi_file.mid", ticks_per_sixteenth=180)
+#n = io.export_MIDI([decoded_generated_tuple], file_name="mid_saved_midi_file.mid", ticks_per_sixteenth=180)
 timer_end = time.time()
 print(f"Audio generated in {round(timer_end - timer_start, 2)} seconds by PPO")
 
 
 # Audio generation params
-offset = "auto"  # Semi-tone shifts up or down to the entire generated audio
-target_track = 0
+offset = 0  # Semi-tone shifts up or down to the entire generated audio
 target_channel = 3
 file_name_for_inference = "solo and back.MID"
-p = 1 / 3   # Probability to change a note (error)
-error_range = 2   # Range of error
-
-# Estimate keys
-midi_input = converter.parse(file_name_for_inference)
-midi_generated = converter.parse("mid_saved_midi_file.mid")
-
-key_estimate_input = midi_input.analyze('key').tonic.midi
-key_estimate_generated = midi_generated.analyze('key').tonic.midi
-
-if isinstance(offset, str):
-    offset = key_estimate_input - key_estimate_generated
+file_name_back = "back.mid"
+p = 1 / 2   # Probability to change a note (error)
+error_range = 5   # Range of error
+force_key = True
+remove_risky_notes_from_key = True
 
 # Inference
 print("Starting inference run")
 mid = mido.MidiFile(file_name_for_inference)
+
+# Create errors
 mid_errors = deepcopy(mid)
-mid_fixed = deepcopy(mid)
-pointer_on_generated_tuple = 0
 for i, track in enumerate(mid.tracks):
     for j, msg in enumerate(track):
-        if msg.type in ['note_on', 'note_off'] and msg.channel == target_channel:
-            to_cause_error = random.randint(0, int(1 / p))
+        if msg.type == "note_on" and msg.channel == target_channel:
+            ending_message = Message('note_off', channel=msg.channel, note=msg.note,
+                                          velocity=msg.velocity, time=msg.time)
+            curr_end_idx = "not found"
+            for k, _msg in enumerate(track):
+                if _msg.type == "note_off":
+                    #ending_message.time = _msg.time
+                    #ending_message.velocity = _msg.velocity
+
+                    if k > j and _msg.channel == target_channel and _msg.note == msg.note:
+                        curr_end_idx = k
+                        break
+            if isinstance(curr_end_idx, str):
+                print(f"During error making found a note without 'note_off' message - will not be changed")
+                continue
+            to_cause_error = random.randint(0, int(1 / p) - 1)
             if to_cause_error == 0:
                 to_cause_error = 1
             else:
                 to_cause_error = 0
             error_size = random.randint(-error_range, error_range) * to_cause_error
-            fixed_note = offset + generated_tuple[pointer_on_generated_tuple]
             msg_to_errors = deepcopy(msg)
-            msg_to_fixed = deepcopy(msg)
-            msg_to_errors.note += error_size
-            msg_to_fixed.note = fixed_note
-            mid_errors.tracks[i][j] = msg_to_errors
-            mid_fixed.tracks[i][j] = msg_to_fixed
+            #msg_to_errors.note += error_size
+            #ending_message.note += error_size
+            mid_errors.tracks[i][j].note += error_size
+            mid_errors.tracks[i][curr_end_idx].note += error_size
+mid_errors.save('inference_output_errors.mid')    # File saved just to be opened
 
-mid_errors.save('inference_output_errors.mid')
+mid = mido.MidiFile('inference_output_errors.mid')
+
+# Estimate keys
+midi_input_only_back = converter.parse(file_name_back)
+#midi_generated = converter.parse("mid_saved_midi_file.mid")
+
+key_estimate_input_only_back = midi_input_only_back.analyze('key').name
+#key_estimate_generated = midi_generated.analyze('key').name
+
+key_notes_input_only_back = get_scale_notes(key_estimate_input_only_back)
+if remove_risky_notes_from_key:
+    key_notes_input_only_back = remove_risky_notes(key_notes_input_only_back)
+
+# Remove unnecessary items from tuple (666)
+generated_tuple_lst = list(generated_tuple)
+for idx, item in enumerate(generated_tuple_lst):
+    if item > 127:
+        if idx > 0:
+            generated_tuple_lst[idx] = generated_tuple_lst[idx - 1]
+        else:   # idx == 0
+            generated_tuple_lst[idx] = offset + generated_tuple[0]
+generated_tuple = tuple(generated_tuple_lst)
+
+# Fix generated tuple
+mid_fixed = deepcopy(mid)
+pointer_on_generated_tuple = 0
+active_notes = {}
+for i, track in enumerate(mid.tracks):
+    for j, msg in enumerate(track):
+        if msg.type == "note_on" and msg.channel == target_channel:
+            ending_message = Message('note_off', channel=msg.channel, note=msg.note,
+                                          velocity=msg.velocity, time=msg.time)
+            curr_end_idx = "not found"
+            for k, _msg in enumerate(track):
+                if _msg.type == "note_off":
+                    #ending_message.time = _msg.time
+                    #ending_message.velocity = _msg.velocity
+
+                    if k > j and _msg.channel == target_channel and _msg.note == msg.note:
+                        curr_end_idx = k
+                        break
+            if isinstance(curr_end_idx, str):
+                print(f"During error correction found a note without 'note_off' message - will not be changed")
+                continue
+            original_plus_offset_note = offset + generated_tuple[pointer_on_generated_tuple]
+            original_plus_offset_note_mod_12 = original_plus_offset_note % 12
+            if original_plus_offset_note_mod_12 not in key_notes_input_only_back:
+                fixed_note_mod_12 = closest_note(original_plus_offset_note_mod_12, key_notes_input_only_back)
+                scale_offset = fixed_note_mod_12 - original_plus_offset_note_mod_12
+            else:   # Note in scale
+                scale_offset = 0
+            pointer_on_generated_tuple += 1
+            msg_to_fixed = deepcopy(msg)
+            #msg_to_fixed.note += scale_offset * int(force_key)
+            #ending_message.note += scale_offset * int(force_key)
+            mid_fixed.tracks[i][j].note += scale_offset * int(force_key)
+            mid_fixed.tracks[i][curr_end_idx].note += scale_offset * int(force_key)
+
 mid_fixed.save('inference_output_fixed.mid')
+
 print("Inference succeed files saved")
 
 
