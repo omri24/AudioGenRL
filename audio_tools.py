@@ -139,3 +139,9 @@ def move_note_to_correct_octave(src, target):
             closest = shifted
 
     return closest
+
+def handle_semi_tones(note, currently_playing):
+    for item in currently_playing:
+        if abs(item - note) == 1:  # Distance of 1 - should be avoided
+            return item
+    return note   # note is safe and can be returned

@@ -14,7 +14,7 @@ import mido
 from mido import Message
 from copy import deepcopy
 from music21 import converter, key
-from audio_tools import get_scale_notes, closest_note, remove_risky_notes, move_note_to_correct_octave
+from audio_tools import get_scale_notes, closest_note, remove_risky_notes, move_note_to_correct_octave, handle_semi_tones
 
 # Configurations
 reference_file = "piano1_ref.mid"
@@ -116,16 +116,17 @@ print(f"Trajectory generated in {round(timer_end - timer_start, 2)} seconds by P
 
 # Audio generation params
 manual_offset = 0  # Semi-tone shifts up or down to the entire generated audio
-target_channel = 3
+target_channel = 3    # Set this to the channel of the lead instrument
 file_name_for_inference = "solo and back.MID"
 file_name_back = "back.mid"
 p = 1 / 2   # Probability to change a note (error)
-error_range = 5   # Range of error
-squeeze_notes_to_same_octave = True
+error_range = 2   # Range of error
+squeeze_notes_to_same_octave = False
+move_notes_to_input_octave = True
 force_key = True
 remove_risky_notes_from_key = True
 consider_distance_from_back = False
-relevant_channels = [11]
+relevant_channels_for_currently_playing = [11]    # Set this to the main instrument that present in the back
 
 # If 'force_key' and 'consider_distance_from_back', use 'consider_distance_from_back'
 if force_key and consider_distance_from_back:
@@ -209,15 +210,17 @@ generated_tuple = tuple(generated_tuple_lst)
 # Fix generated tuple
 mid_fixed = deepcopy(mid)
 pointer_on_generated_tuple = 0
-currently_playing = []
-backup_memory = []
+
 
 
 for i, track in enumerate(mid.tracks):
 
+    currently_playing = []
+    backup_memory = []
+
     # Backup memory must not be empty - fill it with some relevant note
     for temp_msg in enumerate(track):
-        if temp_msg == "note_on" and msg.channel in relevant_channels:
+        if temp_msg == "note_on" and msg.channel in relevant_channels_for_currently_playing:
             backup_memory.append(msg.note)
 
     # Iterate over all messages
@@ -238,11 +241,14 @@ for i, track in enumerate(mid.tracks):
                 if isinstance(curr_end_idx, str):
                     print(f"During error correction found a note without 'note_off' message - will not be changed")
                     continue
-                note_from_algo =  generated_tuple[pointer_on_generated_tuple]
-                original_note = move_note_to_correct_octave(note_from_algo, msg.note)   # Move to correct octave
+                original_note =  generated_tuple[pointer_on_generated_tuple]
+                if move_notes_to_input_octave:
+                    original_note = move_note_to_correct_octave(original_note, msg.note)   # Move to correct octave
                 original_note_mod_12 = original_note % 12
                 if original_note_mod_12 not in key_notes_input_only_back:
                     fixed_note_mod_12 = closest_note(original_note_mod_12, key_notes_input_only_back)
+                    if not remove_risky_notes_from_key:
+                        fixed_note_mod_12 = handle_semi_tones(fixed_note_mod_12, [i[1] for i in currently_playing])
                     scale_offset = fixed_note_mod_12 - original_note_mod_12
                 else:  # Note in scale
                     scale_offset = 0
@@ -263,7 +269,7 @@ for i, track in enumerate(mid.tracks):
                 #    currently_playing.append(key)
 
         # Not in target channel, but it's note_on/note_off, also, avoid drums
-        elif msg.type in ['note_on', 'note_off'] and msg.channel in relevant_channels:
+        elif msg.type in ['note_on', 'note_off'] and msg.channel in relevant_channels_for_currently_playing:
             key = (msg.channel, msg.note % 12)
             if msg.type == 'note_on' and msg.velocity > 0:
                 if key not in currently_playing:
