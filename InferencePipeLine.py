@@ -123,8 +123,13 @@ p = 1 / 2   # Probability to change a note (error)
 error_range = 2   # Range of error
 squeeze_notes_to_same_octave = False
 move_notes_to_input_octave = True
+
+consider_user_playing_direction = False
+use_generated_tuple_for_correction = True
+
 force_key = True
 remove_risky_notes_from_key = True
+
 consider_distance_from_back = False
 relevant_channels_for_currently_playing = [11]    # Set this to the main instrument that present in the back
 
@@ -211,12 +216,12 @@ generated_tuple = tuple(generated_tuple_lst)
 mid_fixed = deepcopy(mid)
 pointer_on_generated_tuple = 0
 
-
-
 for i, track in enumerate(mid.tracks):
 
     currently_playing = []
     backup_memory = []
+    last_note_from_user = -1
+    last_selected_note = -1
 
     # Backup memory must not be empty - fill it with some relevant note
     for temp_msg in enumerate(track):
@@ -241,29 +246,75 @@ for i, track in enumerate(mid.tracks):
                 if isinstance(curr_end_idx, str):
                     print(f"During error correction found a note without 'note_off' message - will not be changed")
                     continue
-                original_note =  generated_tuple[pointer_on_generated_tuple]
+                if use_generated_tuple_for_correction:
+                    note_to_use =  generated_tuple[pointer_on_generated_tuple]
+                else:
+                    note_to_use = msg.note
+
+
+                # Handle direction
+                if consider_user_playing_direction:
+                    if msg.note > last_note_from_user:
+                        direction = 1
+                    elif msg.note < last_note_from_user:
+                        direction = -1
+                    else:  # msg.note == last_note_from_user
+                        direction = 0
+
+                    # Find offset
+                    note_to_use_mod_12 = note_to_use % 12
+                    if note_to_use_mod_12 not in key_notes_input_only_back:
+                        fixed_note_mod_12 = closest_note(note_to_use_mod_12, key_notes_input_only_back)
+                        if not remove_risky_notes_from_key:
+                            fixed_note_mod_12 = handle_semi_tones(fixed_note_mod_12, [i[1] for i in currently_playing])
+                        scale_offset = fixed_note_mod_12 - note_to_use_mod_12
+                    else:  # Note in scale
+                        scale_offset = 0
+                    if note_to_use_mod_12 not in backup_memory:
+                        fixed_note_mod_12 = closest_note(note_to_use_mod_12, [i[1] for i in backup_memory])
+                        back_offset = fixed_note_mod_12 - note_to_use_mod_12
+                    else:  # Note in back
+                        back_offset = 0
+                    calc_offset = manual_offset + scale_offset * int(force_key) + back_offset * int(consider_distance_from_back)
+
+                    if direction == 1 and calc_offset + note_to_use < last_selected_note:  # User went up but generated audio will go down
+                        note_to_use += 12
+                    elif direction == -1 and calc_offset + note_to_use > last_selected_note:  # User went down but generated audio will go ip
+                        note_to_use += -12
+                    else:  # direction == 0
+                        note_to_use = last_selected_note
+                else:
+                    direction = 1  # to not affect the offset
+
                 if move_notes_to_input_octave:
-                    original_note = move_note_to_correct_octave(original_note, msg.note)   # Move to correct octave
-                original_note_mod_12 = original_note % 12
-                if original_note_mod_12 not in key_notes_input_only_back:
-                    fixed_note_mod_12 = closest_note(original_note_mod_12, key_notes_input_only_back)
+                    note_to_use = move_note_to_correct_octave(note_to_use, msg.note)   # Move to correct octave
+                else:
+                    print("Inference without 'move_notes_to_input_octave' set to True (as currently executed) is not safe!")
+
+                note_to_use_mod_12 = note_to_use % 12
+                if note_to_use_mod_12 not in key_notes_input_only_back:
+                    fixed_note_mod_12 = closest_note(note_to_use_mod_12, key_notes_input_only_back)
                     if not remove_risky_notes_from_key:
                         fixed_note_mod_12 = handle_semi_tones(fixed_note_mod_12, [i[1] for i in currently_playing])
-                    scale_offset = fixed_note_mod_12 - original_note_mod_12
+                    scale_offset = fixed_note_mod_12 - note_to_use_mod_12
                 else:  # Note in scale
                     scale_offset = 0
-                if original_note_mod_12 not in backup_memory:
-                    fixed_note_mod_12 = closest_note(original_note_mod_12, [i[1] for i in backup_memory])
-                    back_offset = fixed_note_mod_12 - original_note_mod_12
+                if note_to_use_mod_12 not in backup_memory:
+                    fixed_note_mod_12 = closest_note(note_to_use_mod_12, [i[1] for i in backup_memory])
+                    back_offset = fixed_note_mod_12 - note_to_use_mod_12
                 else:  # Note in back
                     back_offset = 0
-                pointer_on_generated_tuple += 1
+
+                if not consider_user_playing_direction or (consider_user_playing_direction and direction != 0):
+                    pointer_on_generated_tuple += 1
                 msg_to_fixed = deepcopy(msg)
                 #msg_to_fixed.note += scale_offset * int(force_key)
                 #ending_message.note += scale_offset * int(force_key)
-                total_offset = manual_offset + scale_offset * int(force_key) + back_offset * int(consider_distance_from_back)
-                mid_fixed.tracks[i][j].note = original_note + total_offset
-                mid_fixed.tracks[i][curr_end_idx].note = original_note + total_offset
+                total_offset = (manual_offset + scale_offset * int(force_key) + back_offset * int(consider_distance_from_back)) * abs(direction)
+                mid_fixed.tracks[i][j].note = note_to_use + total_offset
+                mid_fixed.tracks[i][curr_end_idx].note = note_to_use + total_offset
+                last_note_from_user = msg.note
+                last_selected_note = note_to_use + total_offset
                 #key = (target_channel, mid_fixed.tracks[i][j].note % 12)
                 #if key not in currently_playing:
                 #    currently_playing.append(key)
