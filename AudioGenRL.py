@@ -10,6 +10,7 @@ from stable_baselines3 import PPO
 from prettytable import PrettyTable
 import re
 import sys
+from stable_baselines3.common.callbacks import BaseCallback
 
 
 # Configurations
@@ -18,16 +19,17 @@ file_to_fix = "single_notes_errors_piano_and_drums6.mid"
 correct_file = "single_notes_piano_and_drums6.mid"
 gen_or_fix = "fix"
 model_to_use = "ppo_finite_horizon_500_steps_500000"
-train_PPO = False
+train_PPO = True
 path_to_midi_files = "midi_files"
+snap_shots = 50
 
 # Hyper-parameters
 len_of_state = 4
 top_n = 10   # Number of items to take after for generating the final policy
 top_n_untrained = top_n
 arcs_for_state = 10   # Minimal number of actions that will be legal for each state
-horizon = 5e2
-agent_time_steps = 5e1
+horizon = 500   # Leave this 500, don't change
+agent_time_steps = 1e4
 steps_in_the_final_generation = 100
 leading_items_to_remove_from_action_options = 0
 comparison_loop_iterations = 100
@@ -66,11 +68,37 @@ if train_PPO:
     # Train agent using PPO
     print("Model training with PPO started")
     timer_start = time.time()
-    model = PPO("MlpPolicy", env, verbose=1)
-    model.learn(total_timesteps=agent_time_steps)
 
-    # Save trained model
-    model.save(f"ppo_finite_horizon_{int(horizon)}_steps_{int(agent_time_steps)}")
+    if snap_shots > 0:
+        # Calculate when to save a snapshot of the model - to further evaluation
+        snap_shot_delta = int(agent_time_steps / snap_shots)
+
+        class SnapShotPPO(BaseCallback):
+            def __init__(self, save_freq, save_path, verbose=0):
+                super(SnapShotPPO, self).__init__(verbose)
+                self.save_freq = save_freq
+                self.save_path = save_path
+                os.makedirs(self.save_path, exist_ok=True)
+
+            def _on_step(self) -> bool:
+                if self.num_timesteps % self.save_freq == 0:
+                    save_file = os.path.join(self.save_path, f'model_{self.num_timesteps}_steps')
+                    self.model.save(save_file)
+                    if self.verbose:
+                        print(f"Saved model at {self.num_timesteps} timesteps to {save_file}")
+                return True
+
+        model = PPO("MlpPolicy", env, verbose=1)
+        save_callback = SnapShotPPO(save_freq=snap_shot_delta, save_path="./ppo_checkpoints", verbose=1)
+        model.learn(total_timesteps=agent_time_steps, callback=save_callback)
+
+    else:   # No snap-shots
+        model = PPO("MlpPolicy", env, verbose=1)
+        model.learn(total_timesteps=agent_time_steps)
+
+        # Save trained model
+        model.save(f"ppo_finite_horizon_{int(horizon)}_steps_{int(agent_time_steps)}")
+
     timer_end = time.time()
     print(f"Model trained and saved in {round(timer_end - timer_start, 2)} seconds")
     sys.exit(0)
