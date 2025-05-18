@@ -21,7 +21,7 @@ gen_or_fix = "fix"
 model_to_use = "ppo_finite_horizon_500_steps_500000"
 train_PPO = True
 path_to_midi_files = "midi_files"
-snap_shots = 50
+snap_shots = 200
 
 # Hyper-parameters
 len_of_state = 4
@@ -29,7 +29,7 @@ top_n = 10   # Number of items to take after for generating the final policy
 top_n_untrained = top_n
 arcs_for_state = 10   # Minimal number of actions that will be legal for each state
 horizon = 500   # Leave this 500, don't change
-agent_time_steps = 1e4
+agent_time_steps = 1e6
 steps_in_the_final_generation = 100
 leading_items_to_remove_from_action_options = 0
 comparison_loop_iterations = 100
@@ -89,6 +89,8 @@ if train_PPO:
                 return True
 
         model = PPO("MlpPolicy", env, verbose=1)
+        model.save(r"./ppo_checkpoints/model_0_steps")
+
         save_callback = SnapShotPPO(save_freq=snap_shot_delta, save_path="./ppo_checkpoints", verbose=1)
         model.learn(total_timesteps=agent_time_steps, callback=save_callback)
 
