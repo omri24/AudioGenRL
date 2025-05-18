@@ -1,19 +1,15 @@
-import os
 import random
+import re
 import time
 import MIDI_IO as io
 import MIDI_coding as code
 import RL_algorithms as RL
 from RL_algorithms import FiniteHorizonDDPEnv, get_top_actions, calculate_entropy
-import audio_metrics as metrics
 from stable_baselines3 import PPO
-from prettytable import PrettyTable
-import re
-import sys
 import mido
 from mido import Message
 from copy import deepcopy
-from music21 import converter, key
+from music21 import converter, key, note, stream, analysis
 from audio_tools import get_scale_notes, closest_note, remove_risky_notes, move_note_to_correct_octave, handle_semi_tones
 
 # Configurations
@@ -124,14 +120,51 @@ error_range = 2   # Range of error
 squeeze_notes_to_same_octave = False
 move_notes_to_input_octave = True
 
-consider_user_playing_direction = False
+consider_user_playing_direction = True
 use_generated_tuple_for_correction = True
 
-force_key = True
-remove_risky_notes_from_key = True
+auto_set_manual_offset = False
+
+force_key = False
+remove_risky_notes_from_key = False
 
 consider_distance_from_back = False
 relevant_channels_for_currently_playing = [11]    # Set this to the main instrument that present in the back
+
+# Define a string that will be included in the (fixed) output file name
+fix_config_str = "-configs"
+if use_generated_tuple_for_correction:
+    fix_config_str += "-gen1"
+else:
+    fix_config_str += "-gen0"
+if move_notes_to_input_octave:
+    fix_config_str += "-movToIn1"
+else:
+    fix_config_str += "-movToIn0"
+if consider_user_playing_direction:
+    fix_config_str += "-direction1"
+else:
+    fix_config_str += "-direction0"
+if force_key:
+    fix_config_str += "-forceKey1"
+else:
+    fix_config_str += "-forceKey0"
+if remove_risky_notes_from_key:
+    fix_config_str += "-delRisk1"
+else:
+    fix_config_str += "-delRisk0"
+if consider_distance_from_back:
+    fix_config_str += "-distBack1"
+else:
+    fix_config_str += "-distBack0"
+if squeeze_notes_to_same_octave:
+    fix_config_str += "-squeeze1"
+else:
+    fix_config_str += "-squeeze0"
+if auto_set_manual_offset:
+    fix_config_str += "-autoManualOffset1"
+else:
+    fix_config_str += "-autoManualOffset0"
 
 # If 'force_key' and 'consider_distance_from_back', use 'consider_distance_from_back'
 if force_key and consider_distance_from_back:
@@ -185,14 +218,49 @@ mid = mido.MidiFile('inference_output_errors.mid')
 
 # Estimate keys
 midi_input_only_back = converter.parse(file_name_back)
+midi_input_used_in_training = converter.parse(reference_file)
+
 #midi_generated = converter.parse("mid_saved_midi_file.mid")
 
 key_estimate_input_only_back = midi_input_only_back.analyze('key').name
+key_estimate_input_only_back_relative_eq = midi_input_only_back.analyze('key').relative.name
+
+key_estimate_input_used_in_training = midi_input_used_in_training.analyze('key').name
+key_estimate_input_used_in_training_relative_eq = midi_input_used_in_training.analyze('key').relative.name
+
 #key_estimate_generated = midi_generated.analyze('key').name
 
 key_notes_input_only_back = get_scale_notes(key_estimate_input_only_back)
 if remove_risky_notes_from_key:
     key_notes_input_only_back = remove_risky_notes(key_notes_input_only_back)
+
+# If selected - set the manual_offset automatically to eliminate scale difference
+if auto_set_manual_offset:
+    lst_options_for_training_scale = [key_estimate_input_used_in_training, key_estimate_input_used_in_training_relative_eq]
+    lst_options_for_user_backing_track = [key_estimate_input_only_back, key_estimate_input_only_back_relative_eq]
+    for item in lst_options_for_training_scale:
+        if re.search("major", item):
+            training_scale_major = item
+        else:
+            training_scale_minor = item
+    for item in lst_options_for_user_backing_track:
+        if re.search("major", item):
+            backing_track_scale_major = item
+        else:
+            backing_track_scale_minor = item
+    note_map = {"C": 0, "C#": 1, "D-": 1, "D": 2,
+                "E-": 3, "E": 4, "F": 5, "F#": 6,
+                "G-": 6, "G": 7, "A-": 8, "A": 9,
+                "B-": 10, "B": 11, "C-": 11}
+
+    training_scale_note_name = training_scale_major[:training_scale_major.index(" ")]
+    backing_track_note_name = backing_track_scale_major[:backing_track_scale_major.index(" ")]
+
+    distance_back_train = note_map[backing_track_note_name] - note_map[training_scale_note_name]
+    if distance_back_train > 6:   # Case need to reduce instead of increase
+        distance_back_train += -12
+
+    manual_offset = distance_back_train
 
 # Remove unnecessary items from tuple (666) and make sure the distances are less than an octave
 generated_tuple_lst = list(generated_tuple)
@@ -331,7 +399,7 @@ for i, track in enumerate(mid.tracks):
             if len(currently_playing) > 0:   # There are notes to relate to - update the memory
                 backup_memory = deepcopy(currently_playing)
 
-mid_fixed.save('inference_output_fixed.mid')
+mid_fixed.save(f'inference_output_fixed{fix_config_str}.mid')
 timer_end = time.time()
 print(f"Inference succeed files saved, in {round(timer_end - timer_start, 2)} seconds")
 
