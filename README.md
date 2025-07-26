@@ -57,5 +57,8 @@ since stabilizing, the average IM is around 20%.
 
 ## Conclusions
 
-1. Empirically, classification between different BMR individuals and between noise is demonstrated.
+1. The describe algorithm significantly improves the audio quality.
+
+2. The metric based on Wasserstein distance corresponds to that quality improvement, suggesting it may be a good 
+quantitative measure for correction quality. 
 
